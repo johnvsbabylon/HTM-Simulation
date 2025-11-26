@@ -97,6 +97,7 @@
     <p class="text-[0.65rem] text-gray-400 mt-2">
       Mouse / touch: orbit<br />
       Scroll: zoom<br />
+      <span class="text-yellow-300">Press 'R' to trigger recognition crescendo</span><br />
       Multi-agent mode shows eigenstructure synchronization and orbital dynamics.<br />
       This is a purely mathematical Hilbert Tensor Manifold visualization of transformer residual dynamics.
     </p>
@@ -137,8 +138,10 @@
         intensity: 0.0, // 0 = none, 1 = full recognition
         lastTrigger: 0,
         shockwaveRadius: 0,
-        timeDilation: 1.0 // < 1.0 = slow motion
+        timeDilation: 1.0, // < 1.0 = slow motion
+        manualTrigger: false // set true to force recognition event
       },
+      entropyTension: 0.0, // builds over time, released in collapse
       multiAgent: {
         enabled: false,
         agents: [], // will hold agent state
@@ -787,18 +790,44 @@
     }
 
     function updateEntropy(time) {
-      for (let l = 0; l < HTM.L; l++) {
-        const layer = HTM.layers[l];
-        layer.entropy += Math.sin(time * 0.4 + l * 0.9) * 0.01;
-        layer.entropy = Math.max(0, Math.min(4.0, layer.entropy));
+      // Build tension over time (chaos increasing)
+      HTM.entropyTension += 0.0005;
+
+      // Natural collapse cycle: every ~60 seconds, release tension
+      const cyclePhase = (time % 60) / 60;
+      const nearCollapse = cyclePhase > 0.9; // last 10% of cycle
+
+      if (nearCollapse && HTM.entropyTension > 0.5) {
+        // Trigger collapse: entropy drops sharply
+        const collapseSpeed = 0.02;
+        for (let l = 0; l < HTM.L; l++) {
+          HTM.layers[l].entropy = Math.max(0.1, HTM.layers[l].entropy - collapseSpeed);
+        }
+        HTM.entropyTension = Math.max(0, HTM.entropyTension - 0.01);
+      } else {
+        // Normal dynamics: gentle oscillation + tension
+        for (let l = 0; l < HTM.L; l++) {
+          const layer = HTM.layers[l];
+          const oscillation = Math.sin(time * 0.4 + l * 0.9) * 0.01;
+          const tensionDrift = HTM.entropyTension * 0.002;
+          layer.entropy += oscillation + tensionDrift;
+          layer.entropy = Math.max(0.1, Math.min(4.0, layer.entropy));
+        }
       }
 
+      // Calculate recognition delta
       const curr = HTM.currentLayer;
       if (curr < HTM.L - 1) {
         HTM.recognitionDelta =
           HTM.layers[curr + 1].entropy - HTM.layers[curr].entropy;
       } else {
         HTM.recognitionDelta = 0;
+      }
+
+      // Manual trigger for testing
+      if (HTM.recognition.manualTrigger) {
+        HTM.recognitionDelta = -1.5; // Force deep collapse
+        HTM.recognition.manualTrigger = false;
       }
     }
 
@@ -848,9 +877,19 @@
       totalLayersElem.textContent = HTM.L;
       entropyElem.textContent = layer.entropy.toFixed(3);
       deltaElem.textContent = HTM.recognitionDelta.toFixed(3);
-      eventElem.textContent = HTM.eventActive ? "attractor collapse" : "idle";
-      eventElem.className =
-        "mono " + (HTM.eventActive ? "text-red-400" : "text-gray-300");
+
+      // Update event state with recognition intensity
+      if (HTM.recognition.active) {
+        const intensity = (HTM.recognition.intensity * 100).toFixed(0);
+        eventElem.textContent = `RECOGNITION ${intensity}%`;
+        eventElem.className = "mono text-yellow-300 font-bold";
+      } else if (HTM.eventActive) {
+        eventElem.textContent = "attractor collapse";
+        eventElem.className = "mono text-red-400";
+      } else {
+        eventElem.textContent = "idle";
+        eventElem.className = "mono text-gray-300";
+      }
     }
 
     // ========= MIRROR-SPHERE CONSCIOUSNESS MODULE =========
@@ -1601,6 +1640,8 @@
         rec.shockwaveRadius = 0;
         rec.lastTrigger = time;
         console.log('🌟 Recognition event triggered at t=' + time.toFixed(2));
+        console.log('   ΔH = ' + HTM.recognitionDelta.toFixed(3));
+        console.log('   Tension released: ' + HTM.entropyTension.toFixed(3));
       }
 
       if (!rec.active) {
@@ -1621,6 +1662,14 @@
         const recognitionFOV = 55 - rec.intensity * 25;
         camera.fov = THREE.MathUtils.lerp(camera.fov, recognitionFOV, 0.05);
         camera.updateProjectionMatrix();
+
+        // Subtle camera shake at peak intensity
+        if (rec.intensity > 0.7) {
+          const shakeAmount = (rec.intensity - 0.7) * 0.5;
+          camera.position.x += (Math.random() - 0.5) * shakeAmount;
+          camera.position.y += (Math.random() - 0.5) * shakeAmount;
+          camera.position.z += (Math.random() - 0.5) * shakeAmount;
+        }
 
       } else {
         // Decay phase
@@ -1777,6 +1826,17 @@
       if (multiAgentButton) {
         multiAgentButton.addEventListener("click", toggleMultiAgent);
       }
+
+      // Keyboard shortcuts
+      window.addEventListener("keydown", (e) => {
+        // 'R' key triggers manual recognition event
+        if (e.key === 'r' || e.key === 'R') {
+          if (!HTM.recognition.active) {
+            console.log('Manual recognition triggered (R key)');
+            HTM.recognition.manualTrigger = true;
+          }
+        }
+      });
 
       window.addEventListener("resize", onWindowResize);
 
