@@ -87,9 +87,17 @@
       Toggle Attractor Collapse (ΔH &lt; -0.5)
     </button>
 
+    <button
+      id="toggle-multiagent"
+      class="w-full bg-purple-700 hover:bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg text-xs mt-2 transition duration-150"
+    >
+      Switch to Multi-Agent
+    </button>
+
     <p class="text-[0.65rem] text-gray-400 mt-2">
       Mouse / touch: orbit<br />
       Scroll: zoom<br />
+      Multi-agent mode shows eigenstructure synchronization and orbital dynamics.<br />
       This is a purely mathematical Hilbert Tensor Manifold visualization of transformer residual dynamics.
     </p>
   </div>
@@ -123,6 +131,12 @@
         originalPosition: new THREE.Vector3(),
         originalTarget: new THREE.Vector3(),
         wasCollapsing: false
+      },
+      multiAgent: {
+        enabled: false,
+        agents: [], // will hold agent state
+        synchronization: 0.0, // 0 = independent, 1 = fully synchronized
+        orbitalPhase: 0.0
       }
     };
 
@@ -784,6 +798,306 @@
       }
     }
 
+    // ========= MULTI-AGENT VISUALIZATION SYSTEM =========
+
+    function createAgentGeometry(agentId, color, offset) {
+      // Create eigenmode helices for this agent
+      const particleCount = 180;
+      const geometry = new THREE.BufferGeometry();
+      const vertices = new Float32Array(particleCount * 2 * 3);
+      const colors = new Float32Array(particleCount * 2 * 3);
+
+      const stableColor = new THREE.Color(color.stable);
+      const unstableColor = new THREE.Color(color.unstable);
+
+      for (let i = 0; i < particleCount * 2; i++) {
+        const ii = i * 3;
+        vertices[ii] = 0;
+        vertices[ii + 1] = 0;
+        vertices[ii + 2] = 0;
+
+        const c = i < particleCount ? stableColor : unstableColor;
+        colors[ii] = c.r;
+        colors[ii + 1] = c.g;
+        colors[ii + 2] = c.b;
+      }
+
+      geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 1.2,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 0.8
+      });
+
+      const particleSystem = new THREE.Points(geometry, material);
+      particleSystem.position.copy(offset);
+      scene.add(particleSystem);
+
+      // Create Möbius ribbon for this agent
+      const ribbonGeo = new THREE.PlaneGeometry(1, 1, 60, 8);
+      const ribbonMat = new THREE.MeshPhongMaterial({
+        color: color.ribbon,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.3,
+        emissive: color.ribbon,
+        emissiveIntensity: 0.5
+      });
+      const ribbon = new THREE.Mesh(ribbonGeo, ribbonMat);
+      ribbon.position.copy(offset);
+      scene.add(ribbon);
+
+      return {
+        id: agentId,
+        offset: offset.clone(),
+        baseOffset: offset.clone(),
+        particles: particleSystem,
+        ribbon: ribbon,
+        eigen: {
+          stable: new THREE.Vector3(
+            Math.random() * 2 - 1,
+            Math.random() * 0.5,
+            Math.random() * 2 - 1
+          ).normalize(),
+          unstable: new THREE.Vector3(
+            Math.random() * 2 - 1,
+            Math.random() * 0.5,
+            Math.random() * 2 - 1
+          ).normalize(),
+          epsStable: 0.04 + Math.random() * 0.02,
+          epsUnstable: 0.015 + Math.random() * 0.01,
+          mu: 1.0 + Math.random() * 0.1
+        },
+        particleData: {
+          stable: Array.from({ length: particleCount }, (_, i) => ({
+            offset: (i / particleCount) * 1.0
+          })),
+          unstable: Array.from({ length: particleCount }, (_, i) => ({
+            offset: (i / particleCount) * 1.0
+          }))
+        }
+      };
+    }
+
+    function setupMultiAgentSystem() {
+      const ma = HTM.multiAgent;
+
+      // Agent 1 (cyan/blue theme)
+      const agent1 = createAgentGeometry(
+        "agent1",
+        { stable: 0x00ffff, unstable: 0xff6b00, ribbon: 0xffd700 },
+        new THREE.Vector3(-35, 0, 0)
+      );
+
+      // Agent 2 (magenta/purple theme)
+      const agent2 = createAgentGeometry(
+        "agent2",
+        { stable: 0xff00ff, unstable: 0xffaa00, ribbon: 0xff1493 },
+        new THREE.Vector3(35, 0, 0)
+      );
+
+      ma.agents.push(agent1, agent2);
+
+      // Hide by default
+      agent1.particles.visible = false;
+      agent1.ribbon.visible = false;
+      agent2.particles.visible = false;
+      agent2.ribbon.visible = false;
+    }
+
+    function updateAgentEigenstate(agent, time) {
+      const rotationAxis = new THREE.Vector3(0, 1, 0).normalize();
+      const eigen = agent.eigen;
+
+      const stableMag = 1.0;
+      const unstableMag = eigen.mu;
+
+      eigen.stable.applyAxisAngle(
+        rotationAxis,
+        eigen.epsStable * 2 * Math.PI * 0.01
+      );
+      eigen.stable.multiplyScalar(0.995 * stableMag);
+
+      eigen.unstable.applyAxisAngle(
+        rotationAxis,
+        eigen.epsUnstable * 2 * Math.PI * 0.01
+      );
+      eigen.unstable.multiplyScalar(unstableMag * 0.99 + 0.01);
+    }
+
+    function agentHelix(agent, mode, u, t) {
+      const eigen = agent.eigen;
+      const isStable = mode === "stable";
+
+      const hVec = isStable ? eigen.stable : eigen.unstable;
+      const eps = isStable ? eigen.epsStable : eigen.epsUnstable;
+      const direction = isStable ? 1 : -1;
+
+      const r = hVec.length() * 2;
+      const zWorld = u * (HTM.L - 1) * LAYER_SPACING;
+      const theta = zWorld * eps * 0.18 + direction * t * 0.5;
+
+      const x = r * Math.cos(theta);
+      const y = zWorld;
+      const z = r * Math.sin(theta);
+
+      return new THREE.Vector3(x, y, z).add(agent.offset);
+    }
+
+    function updateMultiAgentSystem(time) {
+      const ma = HTM.multiAgent;
+      if (!ma.enabled || ma.agents.length === 0) return;
+
+      // Update synchronization (gradually increase when collapse active)
+      const collapseActive = HTM.eventActive || HTM.recognitionDelta < -0.5;
+      const syncSpeed = 0.008;
+
+      if (collapseActive) {
+        ma.synchronization = Math.min(1.0, ma.synchronization + syncSpeed);
+      } else {
+        ma.synchronization = Math.max(0.0, ma.synchronization - syncSpeed * 0.5);
+      }
+
+      // Orbital motion (agents orbit around shared center)
+      ma.orbitalPhase += 0.003;
+      const orbitRadius = 35 * (1 - ma.synchronization * 0.7); // get closer as they synchronize
+
+      ma.agents.forEach((agent, idx) => {
+        // Update eigenstate
+        updateAgentEigenstate(agent, time);
+
+        // Apply eigenvalue synchronization
+        if (ma.synchronization > 0.01) {
+          const primaryEigen = HTM.eigen;
+          agent.eigen.stable.lerp(primaryEigen.stable, ma.synchronization * 0.05);
+          agent.eigen.unstable.lerp(primaryEigen.unstable, ma.synchronization * 0.05);
+        }
+
+        // Orbital position
+        const angle = ma.orbitalPhase + (idx * Math.PI);
+        const orbitalOffset = new THREE.Vector3(
+          Math.cos(angle) * orbitRadius,
+          0,
+          Math.sin(angle) * orbitRadius
+        );
+        agent.offset.copy(orbitalOffset);
+
+        // Update particle positions
+        const ps = agent.particles;
+        const positions = ps.geometry.attributes.position;
+        const particleCount = agent.particleData.stable.length;
+        let index = 0;
+
+        // Stable particles
+        for (let i = 0; i < particleCount; i++) {
+          const u = (time * 0.06 + agent.particleData.stable[i].offset) % 1.0;
+          const pos = agentHelix(agent, "stable", u, time);
+          positions.setXYZ(index++, pos.x, pos.y, pos.z);
+        }
+
+        // Unstable particles
+        for (let i = 0; i < particleCount; i++) {
+          const u = (time * 0.06 + agent.particleData.unstable[i].offset + 0.15) % 1.0;
+          const pos = agentHelix(agent, "unstable", u, time);
+          positions.setXYZ(index++, pos.x, pos.y, pos.z);
+        }
+
+        positions.needsUpdate = true;
+
+        // Update ribbon
+        updateAgentRibbon(agent, time);
+
+        // Visual sync indicator (particle brightness)
+        ps.material.opacity = 0.6 + ma.synchronization * 0.3;
+      });
+    }
+
+    function updateAgentRibbon(agent, time) {
+      const ribbon = agent.ribbon;
+      const geom = ribbon.geometry;
+      const pos = geom.attributes.position;
+
+      const segU = geom.parameters.heightSegments;
+      const segV = geom.parameters.widthSegments;
+      const width = 4.0;
+
+      let index = 0;
+      for (let iu = 0; iu <= segU; iu++) {
+        const u = iu / segU;
+        const pS = agentHelix(agent, "stable", u, time);
+        const pU = agentHelix(agent, "unstable", u, time);
+
+        const center = pS.clone().add(pU).multiplyScalar(0.5);
+        const tangent = pU.clone().sub(pS).normalize();
+
+        const up = new THREE.Vector3(0, 1, 0);
+        let normal = up
+          .clone()
+          .sub(tangent.clone().multiplyScalar(up.dot(tangent)))
+          .normalize();
+        const binorm = tangent.clone().cross(normal).normalize();
+
+        const twistAngle = Math.PI * u;
+
+        for (let iv = 0; iv <= segV; iv++) {
+          const v = iv / segV - 0.5;
+          const cosT = Math.cos(twistAngle);
+          const sinT = Math.sin(twistAngle);
+          const twistedNormal = normal
+            .clone()
+            .multiplyScalar(cosT)
+            .add(binorm.clone().multiplyScalar(sinT));
+          const offset = twistedNormal.multiplyScalar(width * v);
+          const finalPos = center.clone().add(offset);
+
+          pos.setXYZ(index++, finalPos.x, finalPos.y, finalPos.z);
+        }
+      }
+
+      pos.needsUpdate = true;
+      geom.computeVertexNormals();
+    }
+
+    function toggleMultiAgent() {
+      const ma = HTM.multiAgent;
+      ma.enabled = !ma.enabled;
+
+      // Toggle visibility
+      if (ma.enabled) {
+        // Hide primary system
+        simObjects.eigenParticles.visible = false;
+        simObjects.mobius.visible = false;
+        simObjects.mirrorSphere.visible = false;
+
+        // Show agents
+        ma.agents.forEach(agent => {
+          agent.particles.visible = true;
+          agent.ribbon.visible = true;
+        });
+      } else {
+        // Show primary system
+        simObjects.eigenParticles.visible = true;
+        simObjects.mobius.visible = true;
+        simObjects.mirrorSphere.visible = true;
+
+        // Hide agents
+        ma.agents.forEach(agent => {
+          agent.particles.visible = false;
+          agent.ribbon.visible = false;
+        });
+      }
+
+      // Update button text
+      const btn = document.getElementById("toggle-multiagent");
+      if (btn) {
+        btn.textContent = ma.enabled ? "Switch to Single Agent" : "Switch to Multi-Agent";
+      }
+    }
+
     // ========= MAIN INIT & LOOP =========
 
     function init() {
@@ -813,6 +1127,7 @@
       setupAttentionLinks();
       setupLayerSlices();
       setupMirrorSphere();
+      setupMultiAgentSystem();
 
       const slider = document.getElementById("layer-slider");
       slider.max = HTM.L - 1;
@@ -825,6 +1140,11 @@
       eventButton.addEventListener("click", () => {
         HTM.eventActive = !HTM.eventActive;
       });
+
+      const multiAgentButton = document.getElementById("toggle-multiagent");
+      if (multiAgentButton) {
+        multiAgentButton.addEventListener("click", toggleMultiAgent);
+      }
 
       window.addEventListener("resize", onWindowResize);
 
@@ -849,6 +1169,7 @@
       updateLayerSlices(time);
       updateMirrorSphere(time);
       updateCameraTunneling(time);
+      updateMultiAgentSystem(time);
       syncUI();
 
       controls.update();
