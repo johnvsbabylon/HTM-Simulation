@@ -137,8 +137,219 @@
         agents: [], // will hold agent state
         synchronization: 0.0, // 0 = independent, 1 = fully synchronized
         orbitalPhase: 0.0
+      },
+      // ========= TRANSFORMER_LENS INTEGRATION HOOKS =========
+      // Architecture for real activation data from transformer models
+      realData: {
+        enabled: false,
+        source: null, // 'synthetic' | 'transformer_lens' | 'api'
+        activations: {
+          // Expected format from transformer_lens:
+          // activations[layer_idx] = {
+          //   residual: Float32Array(seq_len, d_model),
+          //   attn_pattern: Float32Array(n_heads, seq_len, seq_len),
+          //   mlp_out: Float32Array(seq_len, d_model),
+          //   hooks: {
+          //     'hook_resid_pre': Tensor,
+          //     'hook_resid_post': Tensor,
+          //     'hook_attn_out': Tensor
+          //   }
+          // }
+          layers: [],
+          metadata: {
+            model_name: null,
+            n_layers: 0,
+            d_model: 0,
+            n_heads: 0,
+            seq_len: 0
+          }
+        },
+        // Computed from activations
+        eigenDecomp: {
+          // Per-layer eigenvalue decomposition of residual stream
+          layers: [] // [{values: Float32Array, vectors: Float32Array}]
+        }
       }
     };
+
+    // ========= TRANSFORMER_LENS INTEGRATION API =========
+    // Functions for loading and processing real transformer activations
+
+    /**
+     * Load activations from transformer_lens format
+     * Expected workflow:
+     * 1. Python: Run model with caching enabled
+     *    model = HookedTransformer.from_pretrained("gpt2-small")
+     *    logits, cache = model.run_with_cache(tokens)
+     * 2. Python: Export cache to JSON
+     *    data = {
+     *      'layers': [...],
+     *      'metadata': {'model_name': 'gpt2-small', ...}
+     *    }
+     * 3. JS: Call loadTransformerActivations(data)
+     */
+    function loadTransformerActivations(data) {
+      const rd = HTM.realData;
+
+      if (!data || !data.layers || !data.metadata) {
+        console.error('Invalid activation data format');
+        return false;
+      }
+
+      rd.enabled = true;
+      rd.source = 'transformer_lens';
+      rd.activations.layers = data.layers;
+      rd.activations.metadata = data.metadata;
+
+      // Update HTM layer count to match model
+      HTM.L = data.metadata.n_layers;
+
+      console.log(`Loaded activations from ${data.metadata.model_name}`);
+      console.log(`Layers: ${HTM.L}, d_model: ${data.metadata.d_model}`);
+
+      // Compute eigendecomposition for each layer
+      computeEigenDecompositions();
+
+      return true;
+    }
+
+    /**
+     * Compute eigenvalue decomposition of residual stream at each layer
+     * This reveals the eigenmode structure that produces the helices
+     */
+    function computeEigenDecompositions() {
+      const rd = HTM.realData;
+      rd.eigenDecomp.layers = [];
+
+      for (let l = 0; l < rd.activations.layers.length; l++) {
+        const layerData = rd.activations.layers[l];
+
+        if (!layerData.residual) {
+          console.warn(`Layer ${l} missing residual data`);
+          continue;
+        }
+
+        // In real implementation, this would use numeric library
+        // For now, stub showing the interface
+        const eigenResult = computeSVD(layerData.residual);
+        rd.eigenDecomp.layers.push(eigenResult);
+
+        // Update HTM eigenvalues from real data
+        if (l === HTM.currentLayer) {
+          updateEigenFromReal(eigenResult);
+        }
+      }
+    }
+
+    /**
+     * Stub for SVD computation
+     * Real implementation would use math.js, numeric.js, or TensorFlow.js
+     * Returns: {values: Float32Array, vectors: Float32Array}
+     */
+    function computeSVD(residual) {
+      // Placeholder - real implementation would compute SVD
+      // const [U, S, V] = numeric.svd(residual);
+      // return {values: S, vectors: V};
+
+      return {
+        values: new Float32Array([1.0, 0.8, 0.5, 0.3]),
+        vectors: new Float32Array(16) // 4x4 placeholder
+      };
+    }
+
+    /**
+     * Update HTM eigenmode state from real decomposition
+     */
+    function updateEigenFromReal(eigenResult) {
+      if (!eigenResult || !eigenResult.values) return;
+
+      const values = eigenResult.values;
+
+      // Stable mode = largest eigenvalue
+      const stableMag = values[0] || 1.0;
+      HTM.eigen.stable.setLength(stableMag);
+
+      // Unstable mode = second largest (if expanding)
+      const unstableMag = values[1] || 0.5;
+      HTM.eigen.unstable.setLength(unstableMag);
+
+      // Update entropy from eigenvalue spectrum
+      const currentEntropy = computeEntropyFromEigenvalues(values);
+      HTM.layers[HTM.currentLayer].entropy = currentEntropy;
+    }
+
+    /**
+     * Compute entropy H = -Σ p_i log(p_i) from eigenvalue distribution
+     */
+    function computeEntropyFromEigenvalues(values) {
+      const sum = values.reduce((a, b) => a + b, 0);
+      let entropy = 0;
+
+      for (let i = 0; i < values.length; i++) {
+        const p = values[i] / sum;
+        if (p > 0) {
+          entropy -= p * Math.log(p);
+        }
+      }
+
+      return entropy;
+    }
+
+    /**
+     * API endpoint hook for real-time streaming
+     * Usage: connectToTransformerAPI('ws://localhost:8000/stream')
+     */
+    function connectToTransformerAPI(url) {
+      const ws = new WebSocket(url);
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'activations') {
+          loadTransformerActivations(data.payload);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      return ws;
+    }
+
+    /**
+     * Export current HTM state for analysis
+     * Can be saved and reloaded, or sent to Python for further analysis
+     */
+    function exportHTMState() {
+      return {
+        timestamp: Date.now(),
+        layers: HTM.layers.map(l => ({
+          entropy: l.entropy
+        })),
+        eigen: {
+          stable: HTM.eigen.stable.toArray(),
+          unstable: HTM.eigen.unstable.toArray(),
+          epsStable: HTM.eigen.epsStable,
+          epsUnstable: HTM.eigen.epsUnstable
+        },
+        recognitionDelta: HTM.recognitionDelta,
+        eventActive: HTM.eventActive,
+        realDataEnabled: HTM.realData.enabled,
+        metadata: HTM.realData.enabled ? HTM.realData.activations.metadata : null
+      };
+    }
+
+    /**
+     * Expose integration API to window for external access
+     */
+    if (typeof window !== 'undefined') {
+      window.HTMIntegration = {
+        loadActivations: loadTransformerActivations,
+        connectAPI: connectToTransformerAPI,
+        exportState: exportHTMState,
+        getState: () => HTM
+      };
+    }
 
     // ========= UTILITY MATH =========
 
