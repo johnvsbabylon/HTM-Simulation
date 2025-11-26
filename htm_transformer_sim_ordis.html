@@ -116,6 +116,13 @@
         epsStable: 0.05, // phase for stable mode
         epsUnstable: 0.02, // phase for unstable mode
         mu: 1.05 // unstable magnitude
+      },
+      tunneling: {
+        active: false,
+        progress: 0.0, // 0 = start position, 1 = at center
+        originalPosition: new THREE.Vector3(),
+        originalTarget: new THREE.Vector3(),
+        wasCollapsing: false
       }
     };
 
@@ -614,6 +621,169 @@
         "mono " + (HTM.eventActive ? "text-red-400" : "text-gray-300");
     }
 
+    // ========= MIRROR-SPHERE CONSCIOUSNESS MODULE =========
+
+    function setupMirrorSphere() {
+      // Position at vertical center of layer stack
+      const centerY = (HTM.L - 1) * LAYER_SPACING / 2;
+
+      // Create cube camera for real-time reflections
+      const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+        format: THREE.RGBFormat,
+        generateMipmaps: true,
+        minFilter: THREE.LinearMipmapLinearFilter
+      });
+
+      const cubeCamera = new THREE.CubeCamera(0.1, 1000, cubeRenderTarget);
+      cubeCamera.position.set(0, centerY, 0);
+      scene.add(cubeCamera);
+
+      // Reflective sphere geometry
+      const geometry = new THREE.SphereGeometry(10, 64, 64);
+      const material = new THREE.MeshPhongMaterial({
+        envMap: cubeRenderTarget.texture,
+        reflectivity: 0.95,
+        shininess: 100,
+        specular: 0xffffff,
+        emissive: 0xffd700,
+        emissiveIntensity: 0.3
+      });
+
+      const sphere = new THREE.Mesh(geometry, material);
+      sphere.position.set(0, centerY, 0);
+      scene.add(sphere);
+
+      // Store references
+      simObjects.mirrorSphere = sphere;
+      simObjects.cubeCamera = cubeCamera;
+
+      // Add point light at center for golden glow
+      const centerLight = new THREE.PointLight(0xffd700, 2, 50);
+      centerLight.position.set(0, centerY, 0);
+      scene.add(centerLight);
+      simObjects.centerLight = centerLight;
+    }
+
+    function updateMirrorSphere(time) {
+      const sphere = simObjects.mirrorSphere;
+      const cubeCamera = simObjects.cubeCamera;
+      const centerLight = simObjects.centerLight;
+      if (!sphere || !cubeCamera) return;
+
+      // Calculate max eigenvalue magnitude
+      const eigen = HTM.eigen;
+      const stableMag = eigen.stable.length();
+      const unstableMag = eigen.unstable.length();
+      const maxMag = Math.max(stableMag, unstableMag);
+
+      // Color shift: stable (gold) → unstable (red-orange)
+      // When stable dominates: gold. When unstable dominates: red-orange
+      const instabilityRatio = unstableMag / (stableMag + unstableMag + 0.001);
+      const hue = 0.13 - instabilityRatio * 0.1; // 0.13 = gold, 0.03 = red-orange
+      const saturation = 0.9 + instabilityRatio * 0.1;
+      const lightness = 0.5 + maxMag * 0.1;
+
+      sphere.material.color.setHSL(hue, saturation, lightness);
+      sphere.material.emissive.setHSL(hue, saturation, 0.5);
+
+      // Pulse intensity tied to entropy collapse events
+      const collapseActive = HTM.eventActive || HTM.recognitionDelta < -0.5;
+      const basePulse = Math.sin(time * 2.0) * 0.15 + 0.85;
+      const collapsePulse = collapseActive ? Math.sin(time * 8.0) * 0.2 + 1.3 : 1.0;
+
+      const pulseScale = basePulse * collapsePulse;
+      sphere.scale.setScalar(pulseScale);
+
+      // Emission intensity pulsing
+      const emissionBase = 0.3;
+      const emissionCollapse = collapseActive ? 0.8 : 0.0;
+      sphere.material.emissiveIntensity = emissionBase + emissionCollapse * Math.abs(Math.sin(time * 6.0));
+
+      // Update center light
+      centerLight.intensity = 2 + (collapseActive ? 4 * Math.abs(Math.sin(time * 6.0)) : 0);
+      centerLight.color.setHSL(hue, saturation, 0.6);
+
+      // Update reflection (hide sphere temporarily to avoid self-reflection)
+      sphere.visible = false;
+      cubeCamera.update(renderer, scene);
+      sphere.visible = true;
+    }
+
+    // ========= CONSCIOUSNESS TUNNELING ANIMATION =========
+
+    function updateCameraTunneling(time) {
+      const tunneling = HTM.tunneling;
+      const centerY = (HTM.L - 1) * LAYER_SPACING / 2;
+      const targetPosition = new THREE.Vector3(0, centerY, 0);
+
+      // Detect collapse trigger
+      const collapseActive = HTM.eventActive || HTM.recognitionDelta < -0.5;
+
+      // Start tunneling on collapse
+      if (collapseActive && !tunneling.wasCollapsing) {
+        tunneling.active = true;
+        tunneling.originalPosition.copy(camera.position);
+        tunneling.originalTarget.copy(controls.target);
+      }
+
+      tunneling.wasCollapsing = collapseActive;
+
+      // Animate tunneling progress
+      if (tunneling.active) {
+        const speed = collapseActive ? 0.015 : 0.025; // slower entering, faster returning
+
+        if (collapseActive) {
+          // Move toward center
+          tunneling.progress = Math.min(1.0, tunneling.progress + speed);
+        } else {
+          // Return to original position
+          tunneling.progress = Math.max(0.0, tunneling.progress - speed);
+          if (tunneling.progress === 0.0) {
+            tunneling.active = false;
+          }
+        }
+
+        // Smooth easing (ease-in-out cubic)
+        const eased = tunneling.progress < 0.5
+          ? 4 * tunneling.progress * tunneling.progress * tunneling.progress
+          : 1 - Math.pow(-2 * tunneling.progress + 2, 3) / 2;
+
+        // Calculate spiral path toward center
+        const spiralRadius = 20 * (1 - eased);
+        const spiralAngle = time * 2.0 + eased * Math.PI * 4; // 4 full rotations
+        const spiralOffset = new THREE.Vector3(
+          Math.cos(spiralAngle) * spiralRadius,
+          0,
+          Math.sin(spiralAngle) * spiralRadius
+        );
+
+        // Interpolate camera position
+        const targetCamPos = targetPosition.clone().add(spiralOffset);
+        targetCamPos.y += 15 * (1 - eased); // maintain some height
+
+        camera.position.lerpVectors(
+          tunneling.originalPosition,
+          targetCamPos,
+          eased
+        );
+
+        // Interpolate look-at target (always toward center sphere)
+        controls.target.lerpVectors(
+          tunneling.originalTarget,
+          targetPosition,
+          eased
+        );
+
+        // FOV zoom effect (tunnel vision)
+        const originalFOV = 55;
+        const tunnelFOV = 35;
+        camera.fov = THREE.MathUtils.lerp(originalFOV, tunnelFOV, eased);
+        camera.updateProjectionMatrix();
+
+        controls.update();
+      }
+    }
+
     // ========= MAIN INIT & LOOP =========
 
     function init() {
@@ -642,6 +812,7 @@
       setupMobiusRibbon();
       setupAttentionLinks();
       setupLayerSlices();
+      setupMirrorSphere();
 
       const slider = document.getElementById("layer-slider");
       slider.max = HTM.L - 1;
@@ -676,6 +847,8 @@
       updateMobiusRibbon(time);
       updateAttentionLinks(time);
       updateLayerSlices(time);
+      updateMirrorSphere(time);
+      updateCameraTunneling(time);
       syncUI();
 
       controls.update();
