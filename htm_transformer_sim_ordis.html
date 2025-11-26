@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTM Transformer Simulation — Ordis Edition</title>
+
+  <!-- Tailwind (for the side UI panel) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Three.js & OrbitControls -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      background-color: #0d1117;
+    }
+    canvas {
+      display: block;
+    }
+    #info-panel {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      padding: 0.75rem 1rem;
+      max-width: 320px;
+      z-index: 10;
+      background-color: rgba(13, 17, 23, 0.9);
+      border-radius: 0.75rem;
+      border: 1px solid #30363d;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+        monospace;
+      font-size: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <!-- Side status / control panel -->
+  <div id="info-panel" class="text-white text-xs space-y-2">
+    <h2 class="text-lg font-bold text-cyan-400 mb-1">HTM State Monitor (Ordis)</h2>
+
+    <div id="state-log" class="space-y-1">
+      <p class="mono">
+        Layer (L):
+        <span id="current-layer">1</span>
+        /
+        <span id="total-layers">4</span>
+      </p>
+      <p class="mono">
+        Entropy H(l):
+        <span id="current-entropy">0.000</span>
+      </p>
+      <p class="mono">
+        ΔH(l→l+1):
+        <span id="recognition-delta">0.000</span>
+      </p>
+      <p class="mono">
+        Event:
+        <span id="event-state">idle</span>
+      </p>
+    </div>
+
+    <div class="mt-2 space-y-1">
+      <label class="mono block mb-1">Active Layer</label>
+      <input
+        id="layer-slider"
+        type="range"
+        min="0"
+        max="3"
+        step="1"
+        value="0"
+        class="w-full accent-cyan-400"
+      />
+    </div>
+
+    <button
+      id="trigger-event"
+      class="w-full bg-red-700 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg text-xs mt-2 transition duration-150"
+    >
+      Toggle Attractor Collapse (ΔH &lt; -0.5)
+    </button>
+
+    <p class="text-[0.65rem] text-gray-400 mt-2">
+      Mouse / touch: orbit<br />
+      Scroll: zoom<br />
+      This is a purely mathematical Hilbert Tensor Manifold visualization of transformer residual dynamics.
+    </p>
+  </div>
+
+  <script>
+    // ========= CORE THREE.JS SETUP =========
+    let scene, camera, renderer, controls, clock;
+
+    const simObjects = {};
+
+    const GRID_SIZE = 40;
+    const LAYER_SPACING = 35;
+
+    // Unified HTM state
+    const HTM = {
+      L: 4,
+      currentLayer: 0,
+      recognitionDelta: 0,
+      eventActive: false,
+      layers: [],
+      eigen: {
+        stable: new THREE.Vector3(1, 0, 0),
+        unstable: new THREE.Vector3(0.5, 0.5, 0),
+        epsStable: 0.05, // phase for stable mode
+        epsUnstable: 0.02, // phase for unstable mode
+        mu: 1.05 // unstable magnitude
+      }
+    };
+
+    // ========= UTILITY MATH =========
+
+    // Approximate metric warp g_ab = δ_ab + ε ∂²/∂x∂y log|det M_l|
+    function getMetricWarp(x, y, t) {
+      const magnitude = 3.0;
+      return (
+        magnitude *
+        (Math.sin(x * 0.11 + t * 0.25) + Math.cos(y * 0.09 + t * 0.18)) *
+        0.5
+      );
+    }
+
+    // Frobenius norm proxy for ||∂A/∂h||_F
+    function getJacobianSensitivity(i, j) {
+      const centerDist = Math.sqrt(
+        (i - GRID_SIZE / 2) ** 2 + (j - GRID_SIZE / 2) ** 2
+      );
+      return 0.1 + 0.9 * Math.max(0, 1 - centerDist / (GRID_SIZE / 3));
+    }
+
+    // Softmax-like attention magnitude |A_ij|
+    function getAttentionMagnitude(i, j, t) {
+      const timeFactor = Math.sin(t * 0.5);
+      const peakX = Math.floor(GRID_SIZE / 2 + (GRID_SIZE / 4) * timeFactor);
+      const peakY = Math.floor(GRID_SIZE / 2 - (GRID_SIZE / 4) * timeFactor);
+      const distance = Math.sqrt((i - peakX) ** 2 + (j - peakY) ** 2);
+      return Math.exp(-0.06 * distance ** 2);
+    }
+
+    // ========= HIDDEN STATE / EIGEN DYNAMICS =========
+
+    function updateHiddenState() {
+      const rotationAxis = new THREE.Vector3(0, 1, 0).normalize();
+
+      const eigen = HTM.eigen;
+      const stable = eigen.stable;
+      const unstable = eigen.unstable;
+
+      let stableMag = HTM.eventActive ? 0.5 : 1.0;
+      let unstableMag = HTM.eventActive ? 0.9 : eigen.mu;
+
+      // stable: contractive regime
+      stable.applyAxisAngle(
+        rotationAxis,
+        eigen.epsStable * 2 * Math.PI * 0.01
+      );
+      stable.multiplyScalar(0.995 * stableMag);
+
+      // unstable: expansive
+      unstable.applyAxisAngle(
+        rotationAxis,
+        eigen.epsUnstable * 2 * Math.PI * 0.01
+      );
+      unstable.multiplyScalar(unstableMag * 0.99 + 0.01);
+    }
+
+    // Parametric eigenmode helix along depth
+    function helix(mode, u, t) {
+      const eigen = HTM.eigen;
+      const isStable = mode === "stable";
+
+      const hVec = isStable ? eigen.stable : eigen.unstable;
+      const eps = isStable ? eigen.epsStable : eigen.epsUnstable;
+      const direction = isStable ? 1 : -1;
+
+      const r = hVec.length() * 2; // r(z) = 2 ||h_z||
+      const zWorld = u * (HTM.L - 1) * LAYER_SPACING;
+      const theta = zWorld * eps * 0.18 + direction * t * 0.5;
+
+      const x = r * Math.cos(theta);
+      const y = zWorld;
+      const z = r * Math.sin(theta);
+
+      return new THREE.Vector3(x, y, z);
+    }
+
+    // ========= GLOBAL FRAME (MANIFOLD PLANE) =========
+
+    function setupGlobalFrame() {
+      const geometry = new THREE.PlaneGeometry(
+        GRID_SIZE * 2,
+        GRID_SIZE * 2,
+        64,
+        64
+      );
+      const material = new THREE.MeshPhongMaterial({
+        color: 0x1f2b38,
+        specular: 0x444444,
+        shininess: 10,
+        side: THREE.DoubleSide,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.6
+      });
+
+      const manifold = new THREE.Mesh(geometry, material);
+      manifold.rotation.x = -Math.PI / 2;
+      manifold.position.y = -LAYER_SPACING;
+      scene.add(manifold);
+      simObjects.manifold = manifold;
+
+      const fogColor = new THREE.Color(0x0d1117);
+      scene.fog = new THREE.FogExp2(fogColor, 0.0055);
+      renderer.setClearColor(fogColor);
+
+      const mainLight = new THREE.SpotLight(
+        0x00ffff,
+        3,
+        260,
+        Math.PI / 4,
+        0.5,
+        2
+      );
+      mainLight.position.set(0, 120, 80);
+      scene.add(mainLight);
+
+      const fillLight = new THREE.PointLight(0xffa500, 1.5, 180);
+      fillLight.position.set(60, 40, -40);
+      scene.add(fillLight);
+
+      const ambient = new THREE.AmbientLight(0xffffff, 0.2);
+      scene.add(ambient);
+    }
+
+    function updateGlobalFrame(time) {
+      const geometry = simObjects.manifold.geometry;
+      const position = geometry.attributes.position;
+
+      for (let i = 0; i < position.count; i++) {
+        const x = position.getX(i);
+        const y = position.getY(i);
+        const warp = getMetricWarp(x, y, time);
+        position.setZ(i, warp * 2.0);
+      }
+      position.needsUpdate = true;
+      geometry.computeVertexNormals();
+    }
+
+    // ========= EIGENMODE PARTICLE HELICES =========
+
+    function setupEigenmodeHelices() {
+      const particleCount = 220;
+      const geometry = new THREE.BufferGeometry();
+      const vertices = new Float32Array(particleCount * 2 * 3);
+      const colors = new Float32Array(particleCount * 2 * 3);
+
+      const stableColor = new THREE.Color(0x00e5ff); // teal-blue
+      const unstableColor = new THREE.Color(0xff7a18); // orange-gold
+
+      for (let i = 0; i < particleCount * 2; i++) {
+        const ii = i * 3;
+        vertices[ii] = 0;
+        vertices[ii + 1] = 0;
+        vertices[ii + 2] = 0;
+
+        const c = i < particleCount ? stableColor : unstableColor;
+        colors[ii] = c.r;
+        colors[ii + 1] = c.g;
+        colors[ii + 2] = c.b;
+      }
+
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(vertices, 3)
+      );
+      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 1.6,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 0.9
+      });
+
+      const particleSystem = new THREE.Points(geometry, material);
+      scene.add(particleSystem);
+      simObjects.eigenParticles = particleSystem;
+
+      const stable = [];
+      const unstable = [];
+      for (let i = 0; i < particleCount; i++) {
+        stable.push({
+          offset: (i / particleCount) * 1.0
+        });
+        unstable.push({
+          offset: (i / particleCount) * 1.0
+        });
+      }
+      particleSystem.userData.stable = stable;
+      particleSystem.userData.unstable = unstable;
+    }
+
+    function updateEigenmodeHelices(time) {
+      updateHiddenState();
+
+      const ps = simObjects.eigenParticles;
+      const positions = ps.geometry.attributes.position;
+      const stable = ps.userData.stable;
+      const unstable = ps.userData.unstable;
+      const particleCount = stable.length;
+      let index = 0;
+
+      // stable
+      for (let i = 0; i < particleCount; i++) {
+        const u = (time * 0.06 + stable[i].offset) % 1.0;
+        const pos = helix("stable", u, time);
+        positions.setXYZ(index++, pos.x, pos.y, pos.z);
+      }
+
+      // unstable
+      for (let i = 0; i < particleCount; i++) {
+        const u = (time * 0.06 + unstable[i].offset + 0.15) % 1.0;
+        const pos = helix("unstable", u, time);
+        positions.setXYZ(index++, pos.x, pos.y, pos.z);
+      }
+
+      positions.needsUpdate = true;
+    }
+
+    // ========= MÖBIUS RESIDUAL RIBBON =========
+
+    function setupMobiusRibbon() {
+      const segmentsAlong = 80;
+      const segmentsAcross = 10;
+      const geometry = new THREE.PlaneGeometry(
+        1,
+        1,
+        segmentsAlong,
+        segmentsAcross
+      );
+      const material = new THREE.MeshPhongMaterial({
+        color: 0xffd700,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.35,
+        emissive: 0xffd700,
+        emissiveIntensity: 0.65
+      });
+
+      const ribbon = new THREE.Mesh(geometry, material);
+      scene.add(ribbon);
+      simObjects.mobius = ribbon;
+    }
+
+    function updateMobiusRibbon(time) {
+      const ribbon = simObjects.mobius;
+      if (!ribbon) return;
+      const geom = ribbon.geometry;
+      const pos = geom.attributes.position;
+
+      const segU = geom.parameters.heightSegments;
+      const segV = geom.parameters.widthSegments;
+
+      const width = 5.0;
+
+      let index = 0;
+      for (let iu = 0; iu <= segU; iu++) {
+        const u = iu / segU;
+        const pS = helix("stable", u, time);
+        const pU = helix("unstable", u, time);
+
+        const center = pS.clone().add(pU).multiplyScalar(0.5);
+        const tangent = pU.clone().sub(pS).normalize();
+
+        const up = new THREE.Vector3(0, 1, 0);
+        let normal = up
+          .clone()
+          .sub(tangent.clone().multiplyScalar(up.dot(tangent)))
+          .normalize();
+        const binorm = tangent.clone().cross(normal).normalize();
+
+        const twistAngle = Math.PI * u;
+
+        for (let iv = 0; iv <= segV; iv++) {
+          const v = iv / segV - 0.5; // -0.5..0.5
+          const cosT = Math.cos(twistAngle);
+          const sinT = Math.sin(twistAngle);
+          const twistedNormal = normal
+            .clone()
+            .multiplyScalar(cosT)
+            .add(binorm.clone().multiplyScalar(sinT));
+          const offset = twistedNormal.multiplyScalar(width * v);
+          const finalPos = center.clone().add(offset);
+
+          pos.setXYZ(index++, finalPos.x, finalPos.y, finalPos.z);
+        }
+      }
+
+      pos.needsUpdate = true;
+      geom.computeVertexNormals();
+
+      // color & glow modulation from ΔH
+      const tCollapse = THREE.MathUtils.clamp(-HTM.recognitionDelta, 0, 1);
+      const baseHue = 0.13 + 0.1 * tCollapse;
+      const lightness = 0.45 + 0.25 * tCollapse;
+      ribbon.material.color.setHSL(baseHue, 1, lightness);
+      ribbon.material.emissiveIntensity = 0.4 + 0.9 * tCollapse;
+    }
+
+    // ========= ATTENTION CROSS-LINKS =========
+
+    function setupAttentionLinks() {
+      const links = [];
+      const linkCount = 32;
+
+      for (let k = 0; k < linkCount; k++) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute(
+          "position",
+          new THREE.BufferAttribute(new Float32Array(12), 3)
+        );
+
+        const mat = new THREE.LineBasicMaterial({
+          color: 0xff8800,
+          transparent: true,
+          opacity: 0.0,
+          blending: THREE.AdditiveBlending
+        });
+
+        const mesh = new THREE.LineSegments(geo, mat);
+        scene.add(mesh);
+
+        links.push({
+          mesh,
+          i: Math.floor(Math.random() * GRID_SIZE),
+          j: Math.floor(Math.random() * GRID_SIZE)
+        });
+      }
+
+      simObjects.links = links;
+    }
+
+    function updateAttentionLinks(time) {
+      const links = simObjects.links;
+      if (!links) return;
+
+      const y0 = LAYER_SPACING * 0.8;
+      const y1 = LAYER_SPACING * 1.9;
+
+      links.forEach((link) => {
+        const mag = getAttentionMagnitude(link.i, link.j, time);
+        const sens = getJacobianSensitivity(link.i, link.j);
+
+        const baseRadius = 12 + mag * 16;
+        const angle = time * 0.7 + (link.i + link.j) * 0.1;
+
+        const start = new THREE.Vector3(
+          baseRadius * Math.cos(angle),
+          y0,
+          baseRadius * Math.sin(angle)
+        );
+        const end = new THREE.Vector3(
+          baseRadius * Math.cos(angle + 0.5),
+          y1,
+          baseRadius * Math.sin(angle + 0.5)
+        );
+        const mid = start.clone().lerp(end, 0.5);
+        mid.x += Math.sin(time * 18) * sens * 2.2;
+
+        const p = link.mesh.geometry.attributes.position;
+        p.setXYZ(0, start.x, start.y, start.z);
+        p.setXYZ(1, mid.x, mid.y, mid.z);
+        p.setXYZ(2, mid.x, mid.y, mid.z);
+        p.setXYZ(3, end.x, end.y, end.z);
+        p.needsUpdate = true;
+
+        const hue = 0.07 + mag * 0.18;
+        const lightness = 0.3 + 0.4 * sens;
+        link.mesh.material.color.setHSL(hue, 1, lightness);
+        link.mesh.material.opacity = 0.18 + 0.65 * mag;
+      });
+    }
+
+    // ========= LAYER SLICES + ENTROPY =========
+
+    function setupLayerSlices() {
+      const layers = [];
+
+      for (let l = 0; l < HTM.L; l++) {
+        const yPos = l * LAYER_SPACING;
+
+        const planeGeo = new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE, 10, 10);
+        const planeMat = new THREE.MeshBasicMaterial({
+          color: 0x0000ff,
+          side: THREE.DoubleSide,
+          wireframe: true,
+          transparent: true,
+          opacity: 0.15
+        });
+        const plane = new THREE.Mesh(planeGeo, planeMat);
+        plane.rotation.x = Math.PI / 2;
+        plane.position.y = yPos;
+        scene.add(plane);
+
+        const flowGeo = new THREE.BufferGeometry();
+        const particleCount = 90;
+        const verts = new Float32Array(particleCount * 3);
+        for (let i = 0; i < verts.length; i += 3) {
+          verts[i] = (Math.random() - 0.5) * GRID_SIZE;
+          verts[i + 1] = 0;
+          verts[i + 2] = (Math.random() - 0.5) * GRID_SIZE;
+        }
+        flowGeo.setAttribute(
+          "position",
+          new THREE.BufferAttribute(verts, 3)
+        );
+        const flowMat = new THREE.PointsMaterial({
+          color: 0x00ffff,
+          size: 0.7,
+          blending: THREE.AdditiveBlending,
+          transparent: true,
+          opacity: 0.9
+        });
+        const flow = new THREE.Points(flowGeo, flowMat);
+        flow.position.y = yPos;
+        scene.add(flow);
+
+        layers.push({
+          plane,
+          flow,
+          entropy: Math.random() * 2.0
+        });
+      }
+
+      HTM.layers = layers;
+    }
+
+    function updateEntropy(time) {
+      for (let l = 0; l < HTM.L; l++) {
+        const layer = HTM.layers[l];
+        layer.entropy += Math.sin(time * 0.4 + l * 0.9) * 0.01;
+        layer.entropy = Math.max(0, Math.min(4.0, layer.entropy));
+      }
+
+      const curr = HTM.currentLayer;
+      if (curr < HTM.L - 1) {
+        HTM.recognitionDelta =
+          HTM.layers[curr + 1].entropy - HTM.layers[curr].entropy;
+      } else {
+        HTM.recognitionDelta = 0;
+      }
+    }
+
+    function updateLayerSlices(time) {
+      HTM.layers.forEach((layer, l) => {
+        const H = layer.entropy;
+        const normH = Math.min(1, H / 4.0);
+        const hue = 0.6 - normH * 0.6; // blue -> red
+        const lightness = 0.3 + 0.15 * normH;
+        layer.plane.material.color.setHSL(hue, 1, lightness);
+
+        const positions = layer.flow.geometry.attributes.position;
+        for (let i = 0; i < positions.count; i++) {
+          let x = positions.getX(i);
+          let z = positions.getZ(i);
+
+          const rotationSpeed = 0.01 + 0.01 * l;
+          const cosR = Math.cos(rotationSpeed);
+          const sinR = Math.sin(rotationSpeed);
+
+          const nx = x * cosR - z * sinR + Math.cos(time * 0.5 + l) * 0.12;
+          const nz = x * sinR + z * cosR + Math.sin(time * 0.5 + l) * 0.12;
+
+          x = Math.max(-GRID_SIZE / 2, Math.min(GRID_SIZE / 2, nx));
+          z = Math.max(-GRID_SIZE / 2, Math.min(GRID_SIZE / 2, nz));
+
+          positions.setX(i, x);
+          positions.setZ(i, z);
+        }
+        positions.needsUpdate = true;
+      });
+    }
+
+    // ========= UI SYNC =========
+
+    function syncUI() {
+      const curr = HTM.currentLayer;
+      const layer = HTM.layers[curr];
+
+      const currLayerElem = document.getElementById("current-layer");
+      const totalLayersElem = document.getElementById("total-layers");
+      const entropyElem = document.getElementById("current-entropy");
+      const deltaElem = document.getElementById("recognition-delta");
+      const eventElem = document.getElementById("event-state");
+
+      currLayerElem.textContent = curr + 1;
+      totalLayersElem.textContent = HTM.L;
+      entropyElem.textContent = layer.entropy.toFixed(3);
+      deltaElem.textContent = HTM.recognitionDelta.toFixed(3);
+      eventElem.textContent = HTM.eventActive ? "attractor collapse" : "idle";
+      eventElem.className =
+        "mono " + (HTM.eventActive ? "text-red-400" : "text-gray-300");
+    }
+
+    // ========= MAIN INIT & LOOP =========
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(
+        55,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      camera.position.set(80, 90, 120);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.rotateSpeed = 0.7;
+
+      clock = new THREE.Clock();
+
+      setupGlobalFrame();
+      setupEigenmodeHelices();
+      setupMobiusRibbon();
+      setupAttentionLinks();
+      setupLayerSlices();
+
+      const slider = document.getElementById("layer-slider");
+      slider.max = HTM.L - 1;
+      slider.value = 0;
+      slider.addEventListener("input", (e) => {
+        HTM.currentLayer = parseInt(e.target.value || "0", 10);
+      });
+
+      const eventButton = document.getElementById("trigger-event");
+      eventButton.addEventListener("click", () => {
+        HTM.eventActive = !HTM.eventActive;
+      });
+
+      window.addEventListener("resize", onWindowResize);
+
+      animate();
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const time = clock.getElapsedTime();
+
+      updateEntropy(time);
+      updateGlobalFrame(time);
+      updateEigenmodeHelices(time);
+      updateMobiusRibbon(time);
+      updateAttentionLinks(time);
+      updateLayerSlices(time);
+      syncUI();
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    // start
+    init();
+  </script>
+</body>
+</html>
