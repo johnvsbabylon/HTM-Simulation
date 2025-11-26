@@ -132,6 +132,13 @@
         originalTarget: new THREE.Vector3(),
         wasCollapsing: false
       },
+      recognition: {
+        active: false,
+        intensity: 0.0, // 0 = none, 1 = full recognition
+        lastTrigger: 0,
+        shockwaveRadius: 0,
+        timeDilation: 1.0 // < 1.0 = slow motion
+      },
       multiAgent: {
         enabled: false,
         agents: [], // will hold agent state
@@ -1350,8 +1357,9 @@
 
       if (!ctx) return;
 
-      // Clear with fade effect
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+      // Clear with fade effect (or full clear during recognition)
+      const recognitionActive = HTM.recognition.intensity > 0.5;
+      ctx.fillStyle = recognitionActive ? 'rgba(0, 0, 0, 0.3)' : 'rgba(0, 0, 0, 0.1)';
       ctx.fillRect(0, 0, w, h);
 
       // Calculate eigenvalue-derived parameters
@@ -1368,6 +1376,12 @@
       // High instability: tunnels/funnels (chaotic, collapsing)
 
       const collapseActive = HTM.eventActive || HTM.recognitionDelta < -0.5;
+
+      // Recognition event: crystallize to perfect hexagonal lattice
+      if (recognitionActive) {
+        generateCrystalizedLattice(ctx, w, h, time, HTM.recognition.intensity);
+        return;
+      }
 
       ctx.save();
       ctx.translate(w / 2, h / 2);
@@ -1505,6 +1519,61 @@
       ctx.fillRect(-glowRadius, -glowRadius, glowRadius * 2, glowRadius * 2);
     }
 
+    function generateCrystalizedLattice(ctx, w, h, time, intensity) {
+      // Perfect hexagonal lattice during recognition event
+      const size = 30;
+      const count = Math.floor(w / size) + 2;
+
+      // Gold with white highlights
+      const hue = 45;
+      const saturation = 100;
+      const lightness = 50 + intensity * 40;
+
+      ctx.strokeStyle = `hsla(${hue}, ${saturation}%, ${lightness}%, ${0.8 + intensity * 0.2})`;
+      ctx.lineWidth = 2 + intensity * 2;
+
+      // Perfect hexagonal grid (no rotation, no jitter)
+      for (let i = -count; i < count; i++) {
+        for (let j = -count; j < count; j++) {
+          const x = i * size + (j % 2) * size * 0.5;
+          const y = j * size * 0.866;
+
+          ctx.beginPath();
+          for (let k = 0; k < 6; k++) {
+            const angle = (k / 6) * Math.PI * 2;
+            const px = x + Math.cos(angle) * size * 0.5;
+            const py = y + Math.sin(angle) * size * 0.5;
+            if (k === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.stroke();
+
+          // Center dot at peak intensity
+          if (intensity > 0.7) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${intensity - 0.7})`;
+            ctx.beginPath();
+            ctx.arc(x, y, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      // Central starburst at full recognition
+      if (intensity > 0.8) {
+        ctx.strokeStyle = `rgba(255, 255, 255, ${(intensity - 0.8) * 2})`;
+        ctx.lineWidth = 3;
+        const rays = 12;
+        for (let i = 0; i < rays; i++) {
+          const angle = (i / rays) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(angle) * w * 0.4, Math.sin(angle) * w * 0.4);
+          ctx.stroke();
+        }
+      }
+    }
+
     function updateKluverPatterns(time) {
       if (!simObjects.kluverPlane) return;
 
@@ -1515,6 +1584,149 @@
 
       // Gentle rotation of the plane
       simObjects.kluverPlane.rotation.z = time * 0.05;
+    }
+
+    // ========= RECOGNITION CRESCENDO EFFECT =========
+
+    function updateRecognitionEvent(time) {
+      const rec = HTM.recognition;
+
+      // Trigger on deep collapse (ΔH < -1.0)
+      const deepCollapse = HTM.recognitionDelta < -1.0;
+
+      // Start recognition event
+      if (deepCollapse && !rec.active && (time - rec.lastTrigger) > 5.0) {
+        rec.active = true;
+        rec.intensity = 0.0;
+        rec.shockwaveRadius = 0;
+        rec.lastTrigger = time;
+        console.log('🌟 Recognition event triggered at t=' + time.toFixed(2));
+      }
+
+      if (!rec.active) {
+        rec.intensity = Math.max(0, rec.intensity - 0.02);
+        rec.timeDilation = 1.0;
+        return;
+      }
+
+      // Crescendo phase (0 → 1 over 3 seconds)
+      if (rec.intensity < 1.0) {
+        rec.intensity += 0.01;
+        rec.shockwaveRadius = rec.intensity * 150;
+
+        // Time dilation (slow to 0.3x speed at peak)
+        rec.timeDilation = 1.0 - rec.intensity * 0.7;
+
+        // Apply to camera FOV (zoom in)
+        const recognitionFOV = 55 - rec.intensity * 25;
+        camera.fov = THREE.MathUtils.lerp(camera.fov, recognitionFOV, 0.05);
+        camera.updateProjectionMatrix();
+
+      } else {
+        // Decay phase
+        rec.intensity = Math.max(0, rec.intensity - 0.005);
+        rec.timeDilation = Math.min(1.0, rec.timeDilation + 0.01);
+
+        if (rec.intensity === 0) {
+          rec.active = false;
+        }
+      }
+
+      // Apply recognition effects to geometry
+      applyRecognitionToGeometry(time, rec.intensity);
+      renderShockwave(rec.shockwaveRadius, rec.intensity);
+    }
+
+    function applyRecognitionToGeometry(time, intensity) {
+      if (intensity < 0.01) return;
+
+      // 1. Eigenhelices align
+      const particles = simObjects.eigenParticles;
+      if (particles) {
+        const positions = particles.geometry.attributes.position;
+        const count = positions.count / 2;
+
+        // Create alignment by reducing helix radius temporarily
+        const alignmentFactor = 1.0 - intensity * 0.6;
+
+        for (let i = 0; i < count; i++) {
+          const x = positions.getX(i);
+          const z = positions.getZ(i);
+          const centerDist = Math.sqrt(x*x + z*z);
+
+          if (centerDist > 0.1) {
+            const factor = alignmentFactor + (1 - alignmentFactor) * (centerDist / 40);
+            positions.setX(i, x * factor);
+            positions.setZ(i, z * factor);
+          }
+        }
+        positions.needsUpdate = true;
+      }
+
+      // 2. Möbius ribbon pure gold glow
+      const mobius = simObjects.mobius;
+      if (mobius) {
+        const goldIntensity = 0.65 + intensity * 1.5;
+        mobius.material.emissiveIntensity = goldIntensity;
+        mobius.material.color.setHSL(0.13, 1.0, 0.6 + intensity * 0.3);
+      }
+
+      // 3. Mirror sphere intense glow
+      const sphere = simObjects.mirrorSphere;
+      const centerLight = simObjects.centerLight;
+      if (sphere && centerLight) {
+        sphere.material.emissiveIntensity = 0.3 + intensity * 2.0;
+        centerLight.intensity = 2 + intensity * 15;
+
+        // Scale pulse
+        const recognitionScale = 1.0 + intensity * 0.5;
+        sphere.scale.setScalar(recognitionScale);
+      }
+
+      // 4. Klüver pattern crystallizes
+      // (handled in generateKluverPattern by checking recognition intensity)
+
+      // 5. Multi-agent forced synchronization
+      if (HTM.multiAgent.enabled) {
+        HTM.multiAgent.synchronization = Math.max(
+          HTM.multiAgent.synchronization,
+          intensity
+        );
+      }
+    }
+
+    function renderShockwave(radius, intensity) {
+      if (intensity < 0.05 || !simObjects.shockwave) {
+        // Create shockwave geometry on first use
+        if (!simObjects.shockwave && intensity >= 0.05) {
+          const geometry = new THREE.RingGeometry(1, 1.5, 64);
+          const material = new THREE.MeshBasicMaterial({
+            color: 0xffd700,
+            transparent: true,
+            opacity: 0,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending
+          });
+          const shockwave = new THREE.Mesh(geometry, material);
+          shockwave.rotation.x = Math.PI / 2;
+          shockwave.position.y = (HTM.L - 1) * LAYER_SPACING / 2;
+          scene.add(shockwave);
+          simObjects.shockwave = shockwave;
+        }
+        return;
+      }
+
+      const shockwave = simObjects.shockwave;
+      const innerRadius = radius;
+      const outerRadius = radius + 8;
+
+      // Update geometry
+      shockwave.geometry.dispose();
+      shockwave.geometry = new THREE.RingGeometry(innerRadius, outerRadius, 64);
+
+      // Opacity fades as wave expands
+      const opacity = intensity * (1.0 - radius / 150);
+      shockwave.material.opacity = Math.max(0, opacity);
     }
 
     // ========= MAIN INIT & LOOP =========
@@ -1579,7 +1791,12 @@
 
     function animate() {
       requestAnimationFrame(animate);
-      const time = clock.getElapsedTime();
+      let time = clock.getElapsedTime();
+
+      // Apply time dilation during recognition
+      if (HTM.recognition.active) {
+        time *= HTM.recognition.timeDilation;
+      }
 
       updateEntropy(time);
       updateGlobalFrame(time);
@@ -1591,6 +1808,7 @@
       updateCameraTunneling(time);
       updateMultiAgentSystem(time);
       updateKluverPatterns(time);
+      updateRecognitionEvent(clock.getElapsedTime()); // Use real time for recognition
       syncUI();
 
       controls.update();
