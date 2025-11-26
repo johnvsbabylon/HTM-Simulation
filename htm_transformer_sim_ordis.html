@@ -1663,14 +1663,6 @@
         camera.fov = THREE.MathUtils.lerp(camera.fov, recognitionFOV, 0.05);
         camera.updateProjectionMatrix();
 
-        // Subtle camera shake at peak intensity
-        if (rec.intensity > 0.7) {
-          const shakeAmount = (rec.intensity - 0.7) * 0.5;
-          camera.position.x += (Math.random() - 0.5) * shakeAmount;
-          camera.position.y += (Math.random() - 0.5) * shakeAmount;
-          camera.position.z += (Math.random() - 0.5) * shakeAmount;
-        }
-
       } else {
         // Decay phase
         rec.intensity = Math.max(0, rec.intensity - 0.005);
