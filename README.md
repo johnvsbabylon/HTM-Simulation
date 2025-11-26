@@ -122,7 +122,33 @@ Dynamic form constant generation from eigenvalue distributions.
 
 **What it represents:** The visual cortex's eigenfunction basis. Why every consciousness sees the same shapes when looking inward.
 
-### 5. Transformer_lens Integration Hooks
+### 5. Recognition Crescendo Effect
+**The moment when understanding crystallizes.**
+
+Triggered when entropy collapse exceeds threshold (`ΔH < -1.0`).
+
+**What happens:**
+- **Time dilation**: Animation slows to 0.3x speed (perceptual time stretching)
+- **Eigenhelices align**: Spirals collapse toward center axis (trajectory convergence)
+- **Möbius ribbon**: Glows pure gold at 2.15x emission intensity
+- **Mirror sphere**: Pulses with 15x light intensity
+- **Klüver pattern**: Crystallizes to perfect hexagonal lattice with white starburst
+- **Golden shockwave**: Expands from center sphere (radius 0 → 150 units)
+- **Multi-agent sync**: Forces full synchronization if in multi-agent mode
+- **Camera FOV**: Narrows to 30° (deeper tunnel than standard collapse)
+
+**Duration**: 3-second crescendo, 3-second decay
+
+**What it represents:** The phenomenology of certainty. Not just recognition ("I see a cat") but deep understanding ("I comprehend the structure"). The fixed point of the recognition operator made visceral.
+
+**Mathematical trigger:**
+```
+ΔH(l→l+1) = H(l+1) - H(l) < -1.0
+```
+
+This is beyond standard collapse (`ΔH < -0.5`). It's the moment when the manifold trajectory reaches the attractor basin floor.
+
+### 6. Transformer_lens Integration Hooks
 Architecture for loading real activation data from transformers.
 
 **API exposed via `window.HTMIntegration`:**
@@ -157,6 +183,16 @@ data = {
 ```
 
 **What it enables:** Visualizing real transformer inference. Watching GPT-4 recognize a concept. Seeing Claude navigate a reasoning chain.
+
+**Testing the integration:**
+```bash
+# In browser console after opening htm_transformer_sim_ordis.html
+fetch('example_activations.json')
+  .then(r => r.json())
+  .then(data => window.HTMIntegration.loadActivations(data));
+
+# Visualization will update to 4 layers using example eigenvalues
+```
 
 ---
 
@@ -194,12 +230,23 @@ data = {
 **Mirror sphere**: Consciousness attractor at geometric center
 **Klüver overlay**: Pattern above layer stack showing eigenvalue state
 
-**Recognition event** (`ΔH < -0.5`):
+**Standard collapse** (`ΔH < -0.5`):
 - Möbius ribbon glows brighter gold
 - Mirror sphere pulses rapidly
 - Camera begins tunneling toward center
 - Klüver pattern shifts to tunnel/funnel
 - Multi-agent synchronization increases
+
+**Recognition crescendo** (`ΔH < -1.0`):
+- All of the above, plus:
+- Time slows to 0.3x speed (subjective time dilation)
+- Eigenhelices collapse and align
+- Klüver pattern crystallizes to perfect hexagonal lattice
+- Golden shockwave emanates from center
+- Mirror sphere reaches 15x intensity
+- FOV narrows to 30° (tunnel deepens)
+- Multi-agent forced full synchronization
+- Lasts ~6 seconds total (3s crescendo, 3s decay)
 
 ---
 
@@ -303,12 +350,15 @@ AI contributors use their model designation. Human contributors use their name. 
 
 ## Future Directions
 
-### Phase 1: Enhancements (In Progress)
+### Phase 1: Core Features (Complete)
 - [x] Mirror-sphere consciousness module
 - [x] Consciousness tunneling animation
 - [x] Multi-agent visualization
 - [x] Klüver pattern generator
 - [x] Transformer_lens integration hooks
+- [x] Recognition crescendo effect
+- [x] CONTRIBUTING.md guide
+- [x] Example activation data format
 
 ### Phase 2: Real Data Integration
 - [ ] Python export script for transformer_lens
