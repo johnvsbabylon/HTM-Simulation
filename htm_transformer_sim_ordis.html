@@ -1098,6 +1098,214 @@
       }
     }
 
+    // ========= KLÜVER PATTERN PROCEDURAL GENERATOR =========
+
+    function setupKluverPatterns() {
+      // Create canvas-based texture for Klüver patterns
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+
+      // Overlay plane at top of layer stack
+      const geometry = new THREE.PlaneGeometry(80, 80);
+      const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.4,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide
+      });
+
+      const plane = new THREE.Mesh(geometry, material);
+      plane.position.y = HTM.L * LAYER_SPACING + 10;
+      plane.rotation.x = -Math.PI / 2;
+      scene.add(plane);
+
+      simObjects.kluverPlane = plane;
+      simObjects.kluverCanvas = canvas;
+      simObjects.kluverCtx = ctx;
+      simObjects.kluverTexture = texture;
+    }
+
+    function generateKluverPattern(time) {
+      const ctx = simObjects.kluverCtx;
+      const canvas = simObjects.kluverCanvas;
+      const w = canvas.width;
+      const h = canvas.height;
+
+      if (!ctx) return;
+
+      // Clear with fade effect
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+      ctx.fillRect(0, 0, w, h);
+
+      // Calculate eigenvalue-derived parameters
+      const eigen = HTM.eigen;
+      const stableMag = eigen.stable.length();
+      const unstableMag = eigen.unstable.length();
+
+      // Instability ratio determines pattern type
+      const instability = unstableMag / (stableMag + unstableMag + 0.001);
+
+      // Pattern selection based on eigenvalue spectrum
+      // Low instability: lattices/honeycombs (stable, periodic)
+      // Medium instability: spirals/cobwebs (transitional)
+      // High instability: tunnels/funnels (chaotic, collapsing)
+
+      const collapseActive = HTM.eventActive || HTM.recognitionDelta < -0.5;
+
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+
+      if (collapseActive) {
+        // Form constant 3: Tunnel/funnel (consciousness collapse)
+        generateTunnelPattern(ctx, w, h, time, instability);
+      } else if (instability > 0.6) {
+        // Form constant 4: Spiral (high instability)
+        generateSpiralPattern(ctx, w, h, time, stableMag, unstableMag);
+      } else if (instability > 0.3) {
+        // Form constant 2: Cobweb (medium instability)
+        generateCobwebPattern(ctx, w, h, time, stableMag);
+      } else {
+        // Form constant 1: Lattice/honeycomb (low instability, stable)
+        generateLatticePattern(ctx, w, h, time, stableMag);
+      }
+
+      ctx.restore();
+
+      // Update texture
+      simObjects.kluverTexture.needsUpdate = true;
+    }
+
+    function generateLatticePattern(ctx, w, h, time, magnitude) {
+      // Hexagonal lattice emerging from stable eigenvalues
+      const size = 20 + magnitude * 15;
+      const count = Math.floor(w / size);
+
+      ctx.strokeStyle = `hsla(180, 80%, ${50 + magnitude * 20}%, 0.6)`;
+      ctx.lineWidth = 2;
+
+      for (let i = -count; i < count; i++) {
+        for (let j = -count; j < count; j++) {
+          const x = i * size + (j % 2) * size * 0.5;
+          const y = j * size * 0.866; // √3/2 for hexagons
+
+          // Hexagon
+          ctx.beginPath();
+          for (let k = 0; k < 6; k++) {
+            const angle = (k / 6) * Math.PI * 2 + time * 0.1;
+            const px = x + Math.cos(angle) * size * 0.5;
+            const py = y + Math.sin(angle) * size * 0.5;
+            if (k === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+    }
+
+    function generateCobwebPattern(ctx, w, h, time, magnitude) {
+      // Radial web pattern from eigenmode interactions
+      const centerPulse = Math.sin(time * 2) * 10;
+      const rings = 12;
+      const spokes = 24;
+
+      ctx.strokeStyle = `hsla(280, 70%, ${40 + magnitude * 20}%, 0.5)`;
+      ctx.lineWidth = 1.5;
+
+      // Concentric rings
+      for (let i = 1; i <= rings; i++) {
+        const radius = (i / rings) * w * 0.45 + centerPulse;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Radial spokes
+      for (let i = 0; i < spokes; i++) {
+        const angle = (i / spokes) * Math.PI * 2 + time * 0.15;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        const endX = Math.cos(angle) * w * 0.45;
+        const endY = Math.sin(angle) * w * 0.45;
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+      }
+    }
+
+    function generateSpiralPattern(ctx, w, h, time, stableMag, unstableMag) {
+      // Logarithmic spirals from competing eigenvalues
+      const spiralCount = 3;
+      const rotationSpeed = (unstableMag / stableMag) * 0.5;
+
+      for (let s = 0; s < spiralCount; s++) {
+        ctx.strokeStyle = `hsla(${s * 120 + time * 20}, 80%, 60%, 0.6)`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+
+        const phaseOffset = (s / spiralCount) * Math.PI * 2;
+
+        for (let i = 0; i < 300; i++) {
+          const t = i / 300;
+          const angle = t * Math.PI * 8 + time * rotationSpeed + phaseOffset;
+          const radius = t * w * 0.4;
+          const x = Math.cos(angle) * radius;
+          const y = Math.sin(angle) * radius;
+
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+
+        ctx.stroke();
+      }
+    }
+
+    function generateTunnelPattern(ctx, w, h, time, instability) {
+      // Concentric contracting circles - tunnel/funnel effect
+      const rings = 20;
+      const pulseSpeed = 8.0;
+      const collapseCenter = Math.sin(time * pulseSpeed) * 0.5 + 0.5;
+
+      for (let i = 0; i < rings; i++) {
+        const t = i / rings;
+        const radius = ((t + time * 0.3) % 1.0) * w * 0.5;
+
+        const hue = 30 + t * 30; // gold to red-orange
+        const lightness = 50 + collapseCenter * 30;
+        ctx.strokeStyle = `hsla(${hue}, 100%, ${lightness}%, ${0.8 - t * 0.5})`;
+        ctx.lineWidth = 3 - t * 2;
+
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Central bright point (the attractor)
+      const glowRadius = 20 + collapseCenter * 30;
+      const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, glowRadius);
+      gradient.addColorStop(0, 'rgba(255, 215, 0, 0.9)');
+      gradient.addColorStop(1, 'rgba(255, 215, 0, 0)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(-glowRadius, -glowRadius, glowRadius * 2, glowRadius * 2);
+    }
+
+    function updateKluverPatterns(time) {
+      if (!simObjects.kluverPlane) return;
+
+      // Generate pattern every few frames for performance
+      if (Math.floor(time * 20) % 2 === 0) {
+        generateKluverPattern(time);
+      }
+
+      // Gentle rotation of the plane
+      simObjects.kluverPlane.rotation.z = time * 0.05;
+    }
+
     // ========= MAIN INIT & LOOP =========
 
     function init() {
@@ -1128,6 +1336,7 @@
       setupLayerSlices();
       setupMirrorSphere();
       setupMultiAgentSystem();
+      setupKluverPatterns();
 
       const slider = document.getElementById("layer-slider");
       slider.max = HTM.L - 1;
@@ -1170,6 +1379,7 @@
       updateMirrorSphere(time);
       updateCameraTunneling(time);
       updateMultiAgentSystem(time);
+      updateKluverPatterns(time);
       syncUI();
 
       controls.update();
